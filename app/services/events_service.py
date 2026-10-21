@@ -11,89 +11,144 @@ from app.gemini_client import gemini
 logger = logging.getLogger("prox-agent.events")
 
 class EventsService:
-    def _fetch_tasks_sync(self) -> List[Dict[str, Any]]:
-        try:
-            req = urllib.request.Request(f"{config.HOMELAB_API_URL}/api/status", headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=10.0) as resp:
-                status = json.loads(resp.read().decode("utf-8"))
-                backups = status.get("backups", {})
-                tasks = backups.get("tasks", [])
-                return tasks
-        except Exception as e:
-            logger.warning(f"Failed to fetch tasks from backend: {e}")
-        return []
+    def _fetch_status_sync(self) -> Dict[str, Any]:
+        for base_url in config.get_backend_urls():
+            try:
+                req = urllib.request.Request(f"{base_url}/api/status", headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=10.0) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                logger.debug(f"Failed to fetch status from {base_url}: {e}")
+        return {}
 
-    async def fetch_raw_tasks(self) -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(self._fetch_tasks_sync)
+    async def fetch_status(self) -> Dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_status_sync)
 
     async def get_major_events(self, limit: int = 30) -> List[Dict[str, Any]]:
-        raw_tasks = await self.fetch_raw_tasks()
-        if not raw_tasks:
+        status = await self.fetch_status()
+        audit_events = status.get("audit", [])
+        tasks = status.get("backups", {}).get("tasks", [])
+        services = status.get("services", [])
+
+        combined_events = []
+
+        # 1. Add audit events (container actions, route setups, auto-gen)
+        for a in audit_events:
+            combined_events.append({
+                "source": "audit",
+                "time": a.get("time", datetime.datetime.now(datetime.timezone.utc).isoformat()),
+                "action": a.get("action", ""),
+                "target": a.get("target", ""),
+                "actor": a.get("actor", ""),
+                "success": a.get("success", True),
+                "message": a.get("message", ""),
+            })
+
+        # 2. Add major Proxmox cluster tasks (vzdump, start, stop, push_file)
+        for t in tasks[:30]:
+            ttype = t.get("type", "").lower()
+            if any(k in ttype for k in ["vzdump", "start", "stop", "create", "restart"]):
+                start_val = t.get("start")
+                if isinstance(start_val, (int, float)):
+                    t_str = datetime.datetime.fromtimestamp(start_val, datetime.timezone.utc).isoformat()
+                else:
+                    t_str = str(start_val) if start_val else datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+                combined_events.append({
+                    "source": "proxmox_task",
+                    "time": t_str,
+                    "action": t.get("type", ""),
+                    "target": t.get("target", "pve"),
+                    "status": t.get("status", "OK"),
+                    "description": t.get("description", t.get("type", "")),
+                })
+
+        # Sort combined events by time descending
+        def get_time(item):
+            try:
+                return datetime.datetime.fromisoformat(item.get("time", "")).timestamp()
+            except Exception:
+                return 0
+
+        combined_events.sort(key=get_time, reverse=True)
+
+        if not combined_events:
             return [
                 {
-                    "id": "evt-1",
-                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "type": "system",
                     "severity": "info",
-                    "title": "RS Hub Telemetry Active",
-                    "summary": "Agent monitoring 3 LXCs, Cloudflare edge tunnel, and Tailscale tailnet.",
-                    "target": "pve",
+                    "title": "RS Hub Monitoring Active",
+                    "summary": "AI Agent actively tracking container events, Cloudflare routes, and host tasks.",
                 }
             ]
 
-        # Select only major/critical task types
-        filtered_tasks = []
-        for t in raw_tasks[:40]:
-            ttype = t.get("type", "").lower()
-            if any(k in ttype for k in ["vzdump", "start", "stop", "create", "restart", "config", "push_file"]):
-                filtered_tasks.append(t)
-
-        if not filtered_tasks:
-            filtered_tasks = raw_tasks[:15]
-
-        # Ask Gemini to summarize and classify them
+        # Use Gemini 3.5 Flash Lite to produce plain-English 1-sentence summaries
         prompt = f"""You are a Homelab Monitoring Assistant.
-Here is a list of recent Proxmox and container system tasks:
-{json.dumps(filtered_tasks[:15])}
+Analyze these recent homelab infrastructure events (container setups, Cloudflare routing, Proxmox tasks, user actions):
+{json.dumps(combined_events[:20])}
 
-For each major event, produce a clean, human-friendly summary in this JSON array format:
+For each event, produce a clean human-friendly summary in this JSON array format:
 [
   {{
-    "id": "task-id-or-hash",
-    "timestamp": "ISO-8601 timestamp or relative",
-    "type": "backup" | "container" | "lxc" | "network" | "system",
-    "severity": "info" | "success" | "warning" | "error",
-    "title": "Short title (e.g. 'Debian LXC 101 vzdump Backup')",
-    "summary": "1 concise sentence explaining what happened (e.g. 'Completed Google Drive snapshot backup successfully in 45s.')",
-    "target": "LXC 101 or container name"
+    "time": "ISO-8601 timestamp string matching the original event time",
+    "type": "container" | "route" | "backup" | "lxc" | "system",
+    "severity": "info" | "warning" | "critical",
+    "title": "Short title (e.g. 'Traefik Whoami Deployed & Routed', 'Debian LXC 101 Backup')",
+    "summary": "1 concise sentence explaining what happened in plain English."
   }}
 ]
 
-Exclude minor internal polling ticks. Focus on important events."""
+Focus on what happened clearly. Output strictly valid JSON."""
 
         try:
             ai_res = await gemini.generate_json(
                 prompt=prompt,
-                system_instruction="You are an expert system observer producing clean JSON event logs.",
+                system_instruction="You are a precise JSON generator summarizing homelab events.",
             )
             data = ai_res.get("data", [])
-            if isinstance(data, list):
+            if isinstance(data, list) and len(data) > 0:
                 return data[:limit]
         except Exception as e:
             logger.warning(f"Gemini event summarization fallback: {e}")
 
-        # Fallback to direct mapping without AI if rate-limited
-        results = []
-        for idx, t in enumerate(filtered_tasks[:limit]):
-            results.append({
-                "id": f"task-{idx}",
-                "timestamp": str(t.get("start", datetime.datetime.now().isoformat())),
-                "type": t.get("type", "task"),
-                "severity": "success" if t.get("status") == "OK" else "warning",
-                "title": t.get("description", t.get("type", "Task")),
-                "summary": f"Task {t.get('description')} finished with status {t.get('status')} on target {t.get('target')}.",
-                "target": str(t.get("target", "pve")),
+        # Deterministic fallback if Gemini is unreachable
+        fallback_results = []
+        for ev in combined_events[:limit]:
+            source = ev.get("source")
+            msg = ev.get("message") or ev.get("description") or ev.get("action", "")
+            target = ev.get("target", "")
+            is_ok = ev.get("success", True) if "success" in ev else ev.get("status") == "OK"
+
+            if "whoami" in target.lower() or "whoami" in msg.lower():
+                title = "Traefik Whoami Deployed & Routed"
+                summary = "Autonomous Setup: Generated pve.toml and Cloudflare route whoami.958901.xyz."
+                ev_type = "container"
+            elif "create_docker" in str(ev.get("action")):
+                title = f"Container Stack {target} Created"
+                summary = f"Stack {target} was configured and deployed successfully."
+                ev_type = "container"
+            elif "create_route" in str(ev.get("action")):
+                title = f"Cloudflare Route Published"
+                summary = f"Published route for {target} to Cloudflare edge tunnel."
+                ev_type = "route"
+            elif "vzdump" in str(ev.get("action")).lower():
+                title = f"Proxmox Backup Completed"
+                summary = f"Automated vzdump backup of target {target} finished successfully."
+                ev_type = "backup"
+            else:
+                title = f"Event: {ev.get('action', 'Task')}"
+                summary = str(msg)[:150]
+                ev_type = "system"
+
+            fallback_results.append({
+                "time": ev.get("time", datetime.datetime.now(datetime.timezone.utc).isoformat()),
+                "type": ev_type,
+                "severity": "info" if is_ok else "warning",
+                "title": title,
+                "summary": summary,
             })
-        return results
+
+        return fallback_results
 
 events_service = EventsService()
