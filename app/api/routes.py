@@ -1,5 +1,5 @@
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import config
@@ -45,9 +45,10 @@ async def analyze_stack(req: AnalyzeStackRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/events")
-async def get_events(limit: int = 30) -> Dict[str, Any]:
+async def get_events(request: Request, limit: int = 30) -> Dict[str, Any]:
     try:
-        events = await events_service.get_major_events(limit=limit)
+        auth_token = request.headers.get("Authorization", "")
+        events = await events_service.get_major_events(limit=limit, auth_token=auth_token)
         return {
             "ok": True,
             "count": len(events),
@@ -57,9 +58,10 @@ async def get_events(limit: int = 30) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/diagnostics")
-async def get_diagnostics() -> Dict[str, Any]:
+async def get_diagnostics(request: Request) -> Dict[str, Any]:
     try:
-        diagnostics = await diagnostics_service.run_diagnostics()
+        auth_token = request.headers.get("Authorization", "")
+        diagnostics = await diagnostics_service.run_diagnostics(auth_token=auth_token)
         return {
             "ok": True,
             "count": len(diagnostics),
@@ -69,9 +71,10 @@ async def get_diagnostics() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/rankings")
-async def get_rankings() -> Dict[str, Any]:
+async def get_rankings(request: Request) -> Dict[str, Any]:
     try:
-        data = await rankings_service.get_performance_rankings()
+        auth_token = request.headers.get("Authorization", "")
+        data = await rankings_service.get_performance_rankings(auth_token=auth_token)
         return {
             "ok": True,
             **data,

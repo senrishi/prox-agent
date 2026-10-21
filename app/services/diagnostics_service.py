@@ -11,21 +11,26 @@ from app.gemini_client import gemini
 logger = logging.getLogger("prox-agent.diagnostics")
 
 class DiagnosticsService:
-    def _fetch_status_sync(self) -> Dict[str, Any]:
+    def _fetch_status_sync(self, auth_token: str = "") -> Dict[str, Any]:
+        token = auth_token or config.get_backend_token()
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = token if token.startswith("Bearer ") else f"Bearer {token}"
+
         for base_url in config.get_backend_urls():
             try:
-                req = urllib.request.Request(f"{base_url}/api/status", headers={"Accept": "application/json"})
+                req = urllib.request.Request(f"{base_url}/api/status", headers=headers)
                 with urllib.request.urlopen(req, timeout=10.0) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except Exception as e:
                 logger.debug(f"Failed to fetch status from {base_url}: {e}")
         return {}
 
-    async def fetch_status(self) -> Dict[str, Any]:
-        return await asyncio.to_thread(self._fetch_status_sync)
+    async def fetch_status(self, auth_token: str = "") -> Dict[str, Any]:
+        return await asyncio.to_thread(self._fetch_status_sync, auth_token)
 
-    async def run_diagnostics(self) -> List[Dict[str, Any]]:
-        status = await self.fetch_status()
+    async def run_diagnostics(self, auth_token: str = "") -> List[Dict[str, Any]]:
+        status = await self.fetch_status(auth_token)
         if not status:
             return []
 

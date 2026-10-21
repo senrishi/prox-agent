@@ -34,6 +34,31 @@ class Config:
     PROXMOX_HOST: str = os.getenv("PROXMOX_HOST", "192.168.1.50")
     DOMAIN: str = os.getenv("DOMAIN", "958901.xyz")
     PORT: int = int(os.getenv("PORT", "8090"))
+    ADMIN_USERNAME: str = os.getenv("HOME_USERNAME", os.getenv("ADMIN_USERNAME", "rishi"))
+    ADMIN_PASSWORD: str = os.getenv("HOME_PASSWORD", os.getenv("ADMIN_PASSWORD", "thesen@958"))
+
+    _cached_token: str = ""
+    _token_time: float = 0.0
+
+    @classmethod
+    def get_backend_token(cls) -> str:
+        import time, json, urllib.request
+        if cls._cached_token and time.time() - cls._token_time < 3600:
+            return cls._cached_token
+        for base in cls.get_backend_urls():
+            try:
+                req = urllib.request.Request(
+                    f"{base}/api/login",
+                    data=json.dumps({"username": cls.ADMIN_USERNAME, "password": cls.ADMIN_PASSWORD}).encode(),
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    cls._cached_token = json.loads(r.read().decode())["token"]
+                    cls._token_time = time.time()
+                    return cls._cached_token
+            except Exception:
+                pass
+        return ""
 
     @classmethod
     def get_backend_urls(cls) -> List[str]:
