@@ -45,7 +45,7 @@ Generate metadata for this service:
 1. "name": Clean human-readable title (e.g. "Jellyfin Media", "Uptime Kuma", "Grafana")
 2. "type": One of: "multimedia", "tools", "networking", "infrastructure", "misc"
 3. "description": A concise, friendly one-line description (under 80 chars)
-4. "port": The primary exposed internal port number (integer, e.g. 8096, 3000, 80)
+4. "port": The primary host-mapped port number exposed to the host network (e.g. if ports is "8085:80", return 8085; if "3000:3000", return 3000; if only single port "8080", return 8080). Must be integer.
 5. "scheme": "http" or "https" (almost always "http" for container origins)
 6. "suggested_subdomains": Array of 3-4 clean, catchy subdomain candidates in lowercase (e.g. ["jellyfin", "stream", "media"]). DO NOT use any subdomain from the existing list.
 7. "icon": Appropriate Lucide icon name matching the category (choose from: Music, Radio, Tv, Film, Cloud, Code, HardDrive, Network, Globe, Server, ShieldCheck, Activity, Database, Terminal, Box, Wrench)
