@@ -65,15 +65,18 @@ class RankingsService:
             key = f"mem_{c['name']}"
             prev_rank = self._history.get(key, rank)
             self._history[key] = rank
-            delta = prev_rank - rank  # Positive means moved up
+            delta = prev_rank - rank
             
             top_memory.append({
                 "rank": rank,
                 "name": c["name"],
                 "lxc_id": c["lxc_id"],
+                "value": round(c["memory_percent"], 1),
+                "display_value": c["memory_text"],
                 "memory_text": c["memory_text"],
                 "memory_percent": c["memory_percent"],
                 "state": c["state"],
+                "shift": "up" if delta > 0 else ("down" if delta < 0 else "same"),
                 "movement": "up" if delta > 0 else ("down" if delta < 0 else "same"),
                 "delta": abs(delta),
             })
@@ -82,23 +85,41 @@ class RankingsService:
         cpu_ranking = sorted(all_containers, key=lambda x: x["cpu_percent"], reverse=True)
         top_cpu = []
         for rank, c in enumerate(cpu_ranking[:10], 1):
+            key = f"cpu_{c['name']}"
+            prev_rank = self._history.get(key, rank)
+            self._history[key] = rank
+            delta = prev_rank - rank
+
             top_cpu.append({
                 "rank": rank,
                 "name": c["name"],
                 "lxc_id": c["lxc_id"],
+                "value": round(c["cpu_percent"], 2),
+                "display_value": f"{round(c['cpu_percent'], 2)}%",
                 "cpu_percent": c["cpu_percent"],
                 "state": c["state"],
+                "shift": "up" if delta > 0 else ("down" if delta < 0 else "same"),
+                "delta": abs(delta),
             })
 
         # 3. Route Traffic Rankings
         route_rankings = []
         for rank, r in enumerate(routes, 1):
+            key = f"route_{r.get('name')}"
+            prev_rank = self._history.get(key, rank)
+            self._history[key] = rank
+            delta = prev_rank - rank
+
             route_rankings.append({
                 "rank": rank,
                 "name": r.get("name"),
                 "url": r.get("url"),
+                "value": len(routes) - rank + 1,
+                "display_value": f"{r.get('name')}.{config.DOMAIN}",
                 "target": f"{r.get('scheme', 'http')}://{r.get('host')}:{r.get('port')}",
                 "scheme": r.get("scheme", "http"),
+                "shift": "up" if delta > 0 else ("down" if delta < 0 else "same"),
+                "delta": abs(delta),
             })
 
         # 4. Generate AI Executive Insight
