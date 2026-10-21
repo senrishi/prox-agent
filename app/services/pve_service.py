@@ -71,7 +71,22 @@ Output strictly valid JSON with these keys."""
         if not chosen_subdomain:
             chosen_subdomain = f"{stack_name.lower()}-app"
 
-        service_port = int(data.get("port", 8080))
+        # Deterministically extract host-mapped port if defined in compose
+        host_port = None
+        for line in compose_yaml.splitlines():
+            sline = line.strip()
+            if sline.startswith("-"):
+                m = re.search(r'["\']?(?:(?:\d{1,3}\.){3}\d{1,3}:)?(\d{2,5}):\d{1,5}(?:/(?:tcp|udp))?["\']?', sline)
+                if m:
+                    try:
+                        p_val = int(m.group(1))
+                        if 1 <= p_val <= 65535:
+                            host_port = p_val
+                            break
+                    except ValueError:
+                        pass
+
+        service_port = host_port if host_port else int(data.get("port", 8080))
         service_scheme = data.get("scheme", "http").lower()
         public_url = f"https://{chosen_subdomain}.{config.DOMAIN}"
 
