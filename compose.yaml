@@ -1,0 +1,15 @@
+services:
+  prox-agent:
+    build: .
+    container_name: prox-agent
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8090"
+    env_file:
+      - .env
+    networks:
+      - homepage-net
+
+networks:
+  homepage-net:
+    external: true
