@@ -1,45 +1,15 @@
 # prox-agent
 
-An intelligent Homelab AI Assistant service powered by Google Gemini AI Studio API. Built for Proxmox VE, Docker, and Cloudflare homelab architectures.
+On-demand analysis for RS Hub. Reads authenticated telemetry from the homepage backend; it does not continuously scan or automatically publish services.
 
-## Features
+API (shared `X-Service-Token`, private Docker network): GET /api/health, /api/events, /api/diagnostics, /api/rankings; POST /api/analyze-stack. /healthz is process liveness only. Backend proxy limits analysis to administrators.
 
-- **Docker Compose & pve.toml Auto-Generation**: Analyzes `compose.yaml` files, suggests clean and available subdomains, checks Cloudflare DNS/tunnel routes, and automatically generates valid `pve.toml` configurations.
-- **Homelab Event Tracking**: Analyzes Proxmox VE tasks, container status changes, and critical lifecycle events with Gemini AI 1-sentence summaries.
-- **Homelab Diagnostics & Anomaly Doctor**: Scans resource usage (high RAM/CPU thresholds, storage saturation, CPU thermals, container crash loops) and provides plain-English root causes with actionable remediation commands.
-- **Performance Rankings & Leaderboards**: Computes daily 24h rankings for highest RAM consumers, CPU consumers, and Cloudflare tunnel route traffic, with rank shift indicators (▲, ▼) and executive insights.
-- **Resilient AI Studio Integration**:
-  - Primary model: `gemini-3.5-flash-lite` with automatic fallback to `gemini-3.1-flash-lite` and `gemini-3.5-flash`.
-  - Unlimited round-robin key rotation across any number of Gemini API keys with automatic failover on quota/rate-limits.
-  - Zero heavy local ML footprint: 100% lightweight Python async service consuming < 40MB RAM.
+Set RS_SERVICE_TOKEN (same random 32+ character secret as homepage), HOMELAB_API_URL, DOMAIN, GEMINI_API_KEYS, GEMINI_PRIMARY_MODEL and optional GEMINI_FALLBACK_MODELS through runtime .env. Credentials are excluded from images. No host port is published.
 
-## API Endpoints
+Compose parsing is local. Only a sanitized service label is sent for metadata suggestions; environment values, commands, volumes and full Compose are never sent. Diagnostic AI receives categories and severities only. Output is advisory and schema constrained. Provider failures retain local metadata/checks. Keys and raw provider errors are never returned.
 
-- `GET /health` - Health check and active configuration summary.
-- `POST /api/compose/analyze` - Analyzes a compose file, suggests subdomains, checks availability, and generates `pve.toml`.
-- `POST /api/compose/apply` - Writes `pve.toml` to service directory and triggers Cloudflare route creation.
-- `GET /api/events` - Returns filtered major homelab events with Gemini summaries.
-- `GET /api/diagnostics` - Returns active homelab issues, root causes, and remediation commands.
-- `GET /api/rankings` - Returns RAM, CPU, and route traffic leaderboards with rank shifts and executive insights.
+Rankings show current telemetry, not 24-hour aggregates. Routes are inventory, not measured traffic. Events map Proxmox tasks deterministically. Diagnostics distinguish unavailable telemetry, healthy implemented checks and unstable workloads; deliberately exited services are not assumed broken.
 
-## Quick Start
+Analyze accepts compose_yaml, stack_name, lxc_id, optional host_ip, service_name and published_port. Ambiguous/unresolved ports require selecting or resolving the intended published TCP mapping. It returns a manifest preview; it does not write files, deploy Compose or publish a route. Publish through the homepage's validated job flow. DNS availability is authoritative only at publication.
 
-### 1. Configuration
-Create a `.env` file based on `.env.example`:
-```bash
-cp .env.example .env
-```
-Add your Google AI Studio API key(s):
-```env
-GEMINI_API_KEYS=key1,key2,key3
-PROXMOX_HOST=192.168.1.50
-CLOUDFLARE_ZONE_ID=your_zone_id
-CLOUDFLARE_API_TOKEN=your_token
-HOMELAB_DOMAIN=958901.xyz
-```
-
-### 2. Run with Docker Compose
-```bash
-docker compose up -d --build
-```
-The service will start listening on port `8090` attached to the `homepage-net` Docker network.
+Run `docker compose up -d --build`; health is independent of provider quota. Run tests with `python -m unittest discover -s tests` after installing requirements.lock.

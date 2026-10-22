@@ -1,145 +1,25 @@
-import asyncio
-import datetime
-import json
-import logging
-import urllib.request
-from typing import Any, Dict, List
+import re
+from app.services.telemetry import telemetry
 
-from app.config import config
-from app.gemini_client import gemini
-
-logger = logging.getLogger("prox-agent.rankings")
+def memory_bytes(container):
+    if isinstance(container.get("memory_bytes"),(int,float)):
+        return container["memory_bytes"]
+    match=re.match(r"([0-9.]+)\s*([KMGT]?i?B)",container.get("memory_text", ""),re.I)
+    if not match:
+        return 0
+    unit=match[2].lower();power={"b":0,"kb":1,"kib":1,"mb":2,"mib":2,"gb":3,"gib":3,"tb":4,"tib":4}[unit]
+    return float(match[1])*(1024 if 'i' in unit else 1000)**power
 
 class RankingsService:
-    def __init__(self):
-        # In-memory history cache to compute rank movements
-        self._history: Dict[str, int] = {}
-
-    def _fetch_status_sync(self, auth_token: str = "") -> Dict[str, Any]:
-        token = auth_token or config.get_backend_token()
-        headers = {"Accept": "application/json"}
-        if token:
-            headers["Authorization"] = token if token.startswith("Bearer ") else f"Bearer {token}"
-
-        for base_url in config.get_backend_urls():
-            try:
-                req = urllib.request.Request(f"{base_url}/api/status", headers=headers)
-                with urllib.request.urlopen(req, timeout=10.0) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except Exception as e:
-                logger.debug(f"Failed to fetch status from {base_url}: {e}")
-        return {}
-
-    async def fetch_status(self, auth_token: str = "") -> Dict[str, Any]:
-        return await asyncio.to_thread(self._fetch_status_sync, auth_token)
-
-    async def get_performance_rankings(self, auth_token: str = "") -> Dict[str, Any]:
-        status = await self.fetch_status(auth_token)
-        lxcs = status.get("lxcs", [])
-        routes = status.get("routes", [])
-
-        # Gather all containers across all LXCs
-        all_containers = []
-        for l in lxcs:
-            lxc_id = l.get("id")
-            for c in l.get("containers", []):
-                mem_bytes = c.get("memory_bytes", 0)
-                mem_pct = c.get("memory_percent", 0.0)
-                cpu_pct = c.get("cpu", 0.0)
-                name = c.get("name")
-                if name:
-                    all_containers.append({
-                        "name": name,
-                        "lxc_id": lxc_id,
-                        "memory_bytes": mem_bytes,
-                        "memory_text": c.get("memory_text", f"{round(mem_bytes/1024**2, 1)} MB"),
-                        "memory_percent": mem_pct,
-                        "cpu_percent": cpu_pct,
-                        "state": c.get("state", "unknown"),
-                    })
-
-        # 1. Top Memory Consumers
-        memory_ranking = sorted(all_containers, key=lambda x: (x["memory_percent"], x["memory_bytes"]), reverse=True)
-        top_memory = []
-        for rank, c in enumerate(memory_ranking[:10], 1):
-            key = f"mem_{c['name']}"
-            prev_rank = self._history.get(key, rank)
-            self._history[key] = rank
-            delta = prev_rank - rank
-            
-            top_memory.append({
-                "rank": rank,
-                "name": c["name"],
-                "lxc_id": c["lxc_id"],
-                "value": round(c["memory_percent"], 1),
-                "display_value": c["memory_text"],
-                "memory_text": c["memory_text"],
-                "memory_percent": c["memory_percent"],
-                "state": c["state"],
-                "shift": "up" if delta > 0 else ("down" if delta < 0 else "same"),
-                "movement": "up" if delta > 0 else ("down" if delta < 0 else "same"),
-                "delta": abs(delta),
-            })
-
-        # 2. Top CPU Consumers
-        cpu_ranking = sorted(all_containers, key=lambda x: x["cpu_percent"], reverse=True)
-        top_cpu = []
-        for rank, c in enumerate(cpu_ranking[:10], 1):
-            key = f"cpu_{c['name']}"
-            prev_rank = self._history.get(key, rank)
-            self._history[key] = rank
-            delta = prev_rank - rank
-
-            top_cpu.append({
-                "rank": rank,
-                "name": c["name"],
-                "lxc_id": c["lxc_id"],
-                "value": round(c["cpu_percent"], 2),
-                "display_value": f"{round(c['cpu_percent'], 2)}%",
-                "cpu_percent": c["cpu_percent"],
-                "state": c["state"],
-                "shift": "up" if delta > 0 else ("down" if delta < 0 else "same"),
-                "delta": abs(delta),
-            })
-
-        # 3. Route Traffic Rankings
-        route_rankings = []
-        for rank, r in enumerate(routes, 1):
-            key = f"route_{r.get('name')}"
-            prev_rank = self._history.get(key, rank)
-            self._history[key] = rank
-            delta = prev_rank - rank
-
-            route_rankings.append({
-                "rank": rank,
-                "name": r.get("name"),
-                "url": r.get("url"),
-                "value": len(routes) - rank + 1,
-                "display_value": f"{r.get('name')}.{config.DOMAIN}",
-                "target": f"{r.get('scheme', 'http')}://{r.get('host')}:{r.get('port')}",
-                "scheme": r.get("scheme", "http"),
-                "shift": "up" if delta > 0 else ("down" if delta < 0 else "same"),
-                "delta": abs(delta),
-            })
-
-        # 4. Generate AI Executive Insight
-        insight = "All containers and routes operating at standard resource efficiency."
-        try:
-            top_summary = [f"{c['name']} ({c['memory_text']}, {c['cpu_percent']}% CPU)" for c in top_memory[:4]]
-            prompt = f"""Summarize in 2 sentences the top resource consumers in this homelab today:
-Top containers: {', '.join(top_summary)}
-Routes monitored: {len(routes)}."""
-            ai_res = await gemini.generate_content(prompt=prompt, temperature=0.3)
-            insight = ai_res.get("text", insight).strip()
-        except Exception:
-            pass
-
-        return {
-            "updated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "top_memory": top_memory,
-            "top_cpu": top_cpu,
-            "top_routes": route_rankings,
-            "ai_insight": insight,
-        }
-
-rankings_service = RankingsService()
+    async def get_performance_rankings(self):
+        status=await telemetry.get()
+        containers=[]
+        for lxc in status["lxcs"]:
+            for c in lxc.get("containers",[]):
+                containers.append({"name":c["name"],"lxc_id":lxc["id"],"lxc_name":lxc.get("name","LXC"),"memory_bytes":memory_bytes(c),"memory_text":c.get("memory_text","Unavailable"),"memory_percent":c.get("memory_percent",0),"cpu_percent":c.get("cpu",0),"state":c.get("state","unknown"),"movement":"same","delta":0})
+        def ranked(field):
+            return [{**c,"rank":i,"value":c[field]} for i,c in enumerate(sorted(containers,key=lambda c:c[field],reverse=True)[:10],1)]
+        memory=ranked("memory_bytes");cpu=ranked("cpu_percent")
+        routes=[{"rank":i,"name":r["name"],"url":r.get("url",""),"target":f"{r.get('host')}:{r.get('port')}","movement":"same","delta":0} for i,r in enumerate(status.get("routes",[]),1)]
+        return {"updated":status["updated"],"window":"Current telemetry snapshot; no traffic measurements or daily aggregates","top_memory":memory,"top_cpu":cpu,"top_routes":routes,"ai_insight":"Current measurements ranked by absolute RAM and CPU usage. Routes are inventory, not traffic rankings.","analysis_mode":"local","movement_available":False}
+rankings_service=RankingsService()

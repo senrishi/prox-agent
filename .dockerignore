@@ -1,0 +1,8 @@
+.git
+.env
+.env.*
+__pycache__
+*.pyc
+.pytest_cache
+pve.toml
+.pve_autogen_attempted

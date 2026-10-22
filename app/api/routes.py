@@ -1,83 +1,39 @@
-from typing import Any, Dict, Optional
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
-
-from app.config import config
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 from app.services.pve_service import pve_service
 from app.services.events_service import events_service
 from app.services.diagnostics_service import diagnostics_service
 from app.services.rankings_service import rankings_service
-
-router = APIRouter()
-
+from app.services.telemetry import telemetry, TelemetryError
+router=APIRouter()
 class AnalyzeStackRequest(BaseModel):
-    compose_yaml: str
-    stack_name: str
-    lxc_id: Optional[int] = 100
-    host_ip: Optional[str] = "127.0.0.1"
-    create_route: Optional[bool] = True
-
+    compose_yaml: str=Field(min_length=1,max_length=60000)
+    stack_name: str=Field(min_length=1,max_length=63)
+    lxc_id: int=Field(default=100,gt=0)
+    host_ip: Optional[str]=None
+    create_route: bool=True
+    service_name: Optional[str]=None
+    published_port: Optional[int]=Field(default=None,ge=1,le=65535)
 @router.get("/health")
-async def health_check() -> Dict[str, Any]:
-    keys = config.get_api_keys()
-    return {
-        "status": "ok",
-        "service": "prox-agent",
-        "api_keys_configured": len(keys),
-        "primary_model": config.PRIMARY_MODEL,
-        "fallback_models": config.get_fallback_models(),
-    }
-
+async def health():
+    await telemetry.get()
+    return {"ok":True,"telemetry":"available"}
 @router.post("/analyze-stack")
-async def analyze_stack(req: AnalyzeStackRequest) -> Dict[str, Any]:
-    if not req.compose_yaml.strip():
-        raise HTTPException(status_code=400, detail="compose_yaml content cannot be empty")
+async def analyze(req:AnalyzeStackRequest):
     try:
-        res = await pve_service.analyze_and_generate(
-            compose_yaml=req.compose_yaml,
-            stack_name=req.stack_name,
-            lxc_id=req.lxc_id or 100,
-            host_ip=req.host_ip or "127.0.0.1",
-            create_route=req.create_route if req.create_route is not None else True,
-        )
-        return res
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+        return await pve_service.analyze_and_generate(**req.model_dump())
+    except ValueError as e:
+        raise HTTPException(422,str(e)) from None
 @router.get("/events")
-async def get_events(request: Request, limit: int = 30) -> Dict[str, Any]:
-    try:
-        auth_token = request.headers.get("Authorization", "")
-        events = await events_service.get_major_events(limit=limit, auth_token=auth_token)
-        return {
-            "ok": True,
-            "count": len(events),
-            "events": events,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+async def events(limit:int=Query(30,ge=1,le=100)):
+    status=await telemetry.get()
+    data=await events_service.get_major_events(limit)
+    return {"ok":True,"events":data,"count":len(data),"updated":status["updated"],"source":"Proxmox task inventory"}
 @router.get("/diagnostics")
-async def get_diagnostics(request: Request) -> Dict[str, Any]:
-    try:
-        auth_token = request.headers.get("Authorization", "")
-        diagnostics = await diagnostics_service.run_diagnostics(auth_token=auth_token)
-        return {
-            "ok": True,
-            "count": len(diagnostics),
-            "diagnostics": diagnostics,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+async def diagnostics():
+    data=await diagnostics_service.run_diagnostics()
+    return {"ok":True,"diagnostics":data,"count":len([d for d in data if d['severity']!='healthy'])}
 @router.get("/rankings")
-async def get_rankings(request: Request) -> Dict[str, Any]:
-    try:
-        auth_token = request.headers.get("Authorization", "")
-        data = await rankings_service.get_performance_rankings(auth_token=auth_token)
-        return {
-            "ok": True,
-            **data,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def rankings():
+    return {"ok":True,**await rankings_service.get_performance_rankings()}

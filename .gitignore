@@ -7,3 +7,10 @@ __pycache__/
 .DS_Store
 dist/
 build/
+
+._*
+.pve_autogen_attempted
+/pve.toml
+
+__pycache__/
+*.pyc
